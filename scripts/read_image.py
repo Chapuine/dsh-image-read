@@ -49,6 +49,15 @@ def fail(message):
 def main():
     args = parse_args()
 
+    if args.max_size <= 0:
+        fail("--max-size 必须为正数")
+    if args.split_height <= 0:
+        fail("--split-height 必须为正数")
+    if args.overlap < 0:
+        fail("--overlap 不能为负数")
+    if args.overlap >= args.split_height:
+        fail("--overlap 必须小于 --split-height")
+
     src = os.path.abspath(args.input)
     if not os.path.isfile(src):
         fail(f"文件不存在: {src}")
@@ -64,7 +73,14 @@ def main():
     except Exception as e:
         fail(f"图片读取失败: {e}")
 
-    # 统一色彩模式
+    # 统一色彩模式：先归一化模式，再统一处理透明通道
+    if img.mode == "P":
+        img = img.convert("RGBA" if "transparency" in img.info else "RGB")
+    elif img.mode == "LA":
+        img = img.convert("RGBA")
+    elif img.mode in ("CMYK", "I", "I;16", "F"):
+        img = img.convert("RGB")
+
     if img.mode == "RGBA":
         if args.keep_format:
             pass  # 保留 RGBA，输出 PNG
@@ -72,8 +88,6 @@ def main():
             bg = Image.new("RGB", img.size, (255, 255, 255))
             bg.paste(img, mask=img.split()[-1])
             img = bg
-    elif img.mode in ("LA", "P", "CMYK", "I", "I;16", "F"):
-        img = img.convert("RGB")
 
     out_dir = args.output_dir or os.path.join(os.path.dirname(src), "processed")
     os.makedirs(out_dir, exist_ok=True)
@@ -88,10 +102,13 @@ def main():
     # 第 1 步：切片（在降采样之前，保证长图每一块保留原始细节）
     pieces = [(img, 0, h)]  # (image, top, bottom)
     if not args.no_split and h > args.split_height:
-        step = max(1, args.split_height - args.overlap)
+        step = args.split_height - args.overlap
         top = 0
         pieces = []
         while top < h:
+            # 剩余高度不足 overlap 时已在前一块的重叠区域内，不再单独成块
+            if h - top <= args.overlap:
+                break
             bottom = min(h, top + args.split_height)
             pieces.append((img.crop((0, top, w, bottom)), top, bottom))
             top += step
@@ -110,7 +127,7 @@ def main():
         else:
             name = f"{base}_chunk{idx:02d}{ext_out}"
         path = os.path.join(out_dir, name)
-        piece.save(path, fmt)
+        piece.save(path, fmt, **({"quality": 95} if fmt == "JPEG" else {}))
         files.append({
             "file": path,
             "size": list(piece.size),
